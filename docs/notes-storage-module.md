@@ -11,7 +11,8 @@
 > **destruction** ne peut référencer que `self`, `count.index` et `each.key`
 > (une référence à `local.*` produit l'erreur *« Invalid reference from destroy
 > provisioner »*). En revanche `self.input.*` **et** `path.module` sont autorisés.
-> Le module stocke donc `is_windows` dans `input`.
+> La commande de destruction est donc **OS-agnostique** (`powershell ... || bash
+> ...`) et `input` ne contient **que** `{ bucket, region }` (aucun drapeau d'OS).
 
 ## 1. Contrainte
 
@@ -116,10 +117,19 @@ locals {
 
 Puis, pour chaque provisioner :
 
+- **Création** — l'OS est connu à la compilation :
+
 ```hcl
 command = local.is_windows
-  ? "powershell -NoProfile -ExecutionPolicy Bypass -File \"${path.module}/../../scripts/s3_bucket_admin.ps1\" -Action create -Bucket ${self.input.bucket} -Region ${self.input.region}"
-  : "bash \"${path.module}/../../scripts/s3_bucket_admin.sh\" create ${self.input.bucket} ${self.input.region}"
+  ? "powershell -NoProfile -ExecutionPolicy Bypass -File \"${path.module}/../../scripts/s3_bucket_admin.ps1\" -Action create -Bucket ${local.bucket_name} -Region ${var.aws_region}"
+  : "bash \"${path.module}/../../scripts/s3_bucket_admin.sh\" create ${local.bucket_name} ${var.aws_region}"
+```
+
+- **Destruction** — l'OS **n'est pas** connu (seul `self`/`path.module` sont
+  lisibles). La commande essaie donc PowerShell puis bascule sur bash :
+
+```hcl
+command = "powershell -NoProfile -ExecutionPolicy Bypass -File \"${path.module}/../../scripts/s3_bucket_admin.ps1\" -Action destroy -Bucket ${self.input.bucket} -Region ${self.input.region} || bash \"${path.module}/../../scripts/s3_bucket_admin.sh\" destroy ${self.input.bucket} ${self.input.region}"
 ```
 
 Deux petits scripts `scripts/s3_bucket_admin.ps1` et `scripts/s3_bucket_admin.sh`
@@ -164,6 +174,12 @@ plateformes et garde la logique testable.
 ## 5. Décisions (validées)
 
 - [x] Option A (deux scripts + détection OS) pour le cross-platform.
-- [x] `input` de `terraform_data` = objet `{ bucket, region, is_windows }`.
+- [x] `input` de `terraform_data` = objet `{ bucket, region }` (**aucun drapeau
+      d'OS**) : créer sous Windows et détruire sous Linux ne change pas `input`,
+      donc ne recrée pas `terraform_data` et ne supprime pas le bucket.
+- [x] Commande de **destruction OS-agnostique** (`powershell ... || bash ...`),
+      car l'OS n'est pas lisible dans un provisioner de destruction.
+- [x] Gérer le littéral `None` renvoyé par `aws ... --output text` (les deux
+      scripts l'ignorent explicitement).
 - [ ] Repli automatique vers `local-exec` pour les sous-ressources **si** le SCP
-      les bloque (à confirmer au `apply` de phase 4, non exécuté).
+      les bloque (à confirmer au `apply`, non exécuté).

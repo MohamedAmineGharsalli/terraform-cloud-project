@@ -36,8 +36,18 @@ function Invoke-Aws {
 }
 
 function Test-BucketExists {
-  & aws s3api head-bucket --bucket $Bucket --region $Region 2>$null | Out-Null
-  return ($LASTEXITCODE -eq 0)
+  # head-bucket writes to stderr when the bucket is missing (404). With
+  # $ErrorActionPreference = 'Stop' PowerShell would turn that native stderr
+  # into a terminating error, so it is silenced around the probe only.
+  $previous = $ErrorActionPreference
+  $ErrorActionPreference = 'SilentlyContinue'
+  try {
+    & aws s3api head-bucket --bucket $Bucket --region $Region 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+  }
+  finally {
+    $ErrorActionPreference = $previous
+  }
 }
 
 if ($Action -eq 'create') {
@@ -71,16 +81,20 @@ if (-not (Test-BucketExists)) {
 # remain, so both are removed first.
 foreach ($kind in @('Versions', 'DeleteMarkers')) {
   while ($true) {
-    $lines = & aws s3api list-object-versions --bucket $Bucket --region $Region `
-      --query "$kind[].[Key,VersionId]" --output text 2>$null
+    $lines = @(& aws s3api list-object-versions --bucket $Bucket --region $Region `
+        --query "$kind[].[Key,VersionId]" --output text 2>$null)
     if ($LASTEXITCODE -ne 0) {
       throw "aws s3api list-object-versions ($kind) failed with exit code $LASTEXITCODE"
     }
-    if (-not $lines) { break }
 
-    foreach ($line in @($lines)) {
-      if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    # The AWS CLI prints the literal string "None" (not an empty string) when
+    # the --query matches nothing, so it must be filtered out explicitly.
+    $items = @($lines | Where-Object { $_ -and $_ -ne 'None' })
+    if ($items.Count -eq 0) { break }
+
+    foreach ($line in $items) {
       $parts = $line -split "`t"
+      if ($parts.Count -lt 2) { continue }
       Invoke-Aws -Command @(
         's3api', 'delete-object', '--bucket', $Bucket, '--region', $Region,
         '--key', $parts[0], '--version-id', $parts[1]

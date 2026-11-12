@@ -24,25 +24,33 @@ terraform_data.bucket  --local-exec-->  scripts/s3_bucket_admin.{ps1,sh}  --AWS 
 ### Cross-platform
 
 `local-exec` n'utilise pas PowerShell : Terraform exécute la commande via
-`cmd.exe` sous Windows et `/bin/sh` sous Linux (CI `ubuntu-latest`). L'OS est
-détecté **à la compilation** :
+`cmd.exe` sous Windows et `/bin/sh` sous Linux (CI `ubuntu-latest`).
 
-```hcl
-is_windows = substr(pathexpand("~"), 0, 1) != "/"
-```
+- **Création** : l'OS est détecté **à la compilation** :
 
-puis la commande appelle :
+  ```hcl
+  is_windows = substr(pathexpand("~"), 0, 1) != "/"
+  ```
 
-- `scripts/s3_bucket_admin.ps1` (via `powershell.exe`) sous Windows ;
-- `scripts/s3_bucket_admin.sh` (via `bash`) sous Linux.
+  puis la commande appelle `scripts/s3_bucket_admin.ps1` (via `powershell.exe`)
+  sous Windows, ou `scripts/s3_bucket_admin.sh` (via `bash`) sous Linux.
+
+- **Destruction** : la commande est **indépendante de l'OS**. Elle essaie
+  PowerShell puis bascule sur bash grâce à `||` :
+
+  ```hcl
+  command = "powershell ... s3_bucket_admin.ps1 -Action destroy ... || bash \"...\" s3_bucket_admin.sh destroy ..."
+  ```
 
 > ⚠️ **Piège Terraform** : un provisioner de **destruction** ne peut référencer
-> que `self` (ni `var`, ni `local`). Le drapeau `is_windows` et le nom du bucket
-> sont donc stockés dans `input` et relus via `self.input.*`.
+> que `self` (et `path.module`), donc `is_windows` n'est **pas** lisible au
+> moment de la destruction. C'est précisément pour cela que la commande de
+> destruction est OS-agnostique : `input` ne contient **que** le nom du bucket
+> et la région.
 >
-> Conséquence : **appliquer et détruire depuis le même OS**. Si l'OS change
-> entre `apply` et `destroy`, `input` change et `terraform_data` recrée la
-> ressource (et tenterait de supprimer le bucket).
+> Conséquence importante : **appliquer sous Windows et détruire sous Linux (CI)
+> ne modifie pas `input`**, donc `terraform_data` n'est **pas recréé** et le
+> bucket n'est **pas supprimé par accident**.
 
 ### Scripts
 
@@ -53,6 +61,9 @@ puis la commande appelle :
 - `destroy` : suppression de **toutes les versions** puis de **tous les delete
   markers** (`list-object-versions` → `delete-object`), puis `delete-bucket`.
   Sans cela, un bucket versionné refuse d'être supprimé.
+  - ⚠️ `aws ... --output text` imprime la chaîne littérale **`None`** (et non
+    une chaîne vide) quand la requête ne renvoie rien : les deux scripts
+    l'ignorent explicitement, sinon la boucle ne se terminerait jamais.
 
 La logique métier est ainsi **hors de Terraform** et testable seule (phase 7).
 

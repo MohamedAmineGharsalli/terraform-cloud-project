@@ -57,11 +57,13 @@ if [ "$ACTION" = "destroy" ]; then
     while true; do
       lines="$(aws s3api list-object-versions --bucket "$BUCKET" --region "$REGION" \
         --query "${kind}[].[Key,VersionId]" --output text)"
-      if [ -z "$lines" ]; then
+      # The AWS CLI prints the literal string "None" (not an empty string) when
+      # the --query matches nothing, so it must be filtered out explicitly.
+      if [ -z "$lines" ] || [ "$lines" = "None" ]; then
         break
       fi
       while IFS=$'\t' read -r key version_id; do
-        if [ -z "$key" ]; then
+        if [ -z "$key" ] || [ "$key" = "None" ]; then
           continue
         fi
         aws s3api delete-object --bucket "$BUCKET" --region "$REGION" \
