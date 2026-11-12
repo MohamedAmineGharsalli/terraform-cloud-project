@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# Example variable values for the test environment.
+#
+# Copy this file to terraform.tfvars and adjust it. terraform.tfvars is
+# git-ignored and must NEVER be committed.
+#
+# The database password is NOT set here: it is supplied through the
+# TF_VAR_db_password environment variable (local) or the DB_PASSWORD GitHub
+# secret (CI). See README.md.
+# ---------------------------------------------------------------------------
+
+project_name = "cloud5"
+aws_region   = "us-east-1"
+vpc_cidr     = "10.21.0.0/16"
+
+# Cheap network: one shared NAT gateway.
+single_nat_gateway = true
+
+# Small fleet.
+instance_type    = "t3.micro"
+min_size         = 2
+max_size         = 3
+desired_capacity = 2
+
+# Single-AZ database, moderate backup retention, no final snapshot.
+db_instance_class            = "db.t3.micro"
+db_allocated_storage         = 20
+db_multi_az                  = false
+db_backup_retention          = 3
+db_skip_final_snapshot       = true
+db_final_snapshot_identifier = ""
+db_deletion_protection       = false
+db_apply_immediately         = true
+
+# Storage.
+enable_versioning = true
+
+# No HTTPS in test (no domain / certificate).
+enable_https    = false
+certificate_arn = ""
