@@ -1,19 +1,224 @@
 # ---------------------------------------------------------------------------
-# PLACEHOLDER — the full CI/CD pipeline is implemented in phase 6.
-# Kept as a valid workflow so GitHub Actions does not report an invalid file.
+# Pipeline CI/CD Terraform - projet cloud5
+#
+# Declencheurs :
+#   - pull_request      : fmt + validate + plan sur les 3 environnements
+#   - push sur main     : fmt + validate + apply sur dev
+#   - workflow_dispatch : plan + apply sur l'environnement choisi (ou tous)
+#
+# Les identifiants AWS du Learner Lab sont TEMPORAIRES (cle + secret + jeton de
+# session) et proviennent des secrets GitHub :
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
+# Le mot de passe RDS provient du secret DB_PASSWORD (jamais dans le depot).
+#
+# Aucune ressource IAM n'est creee : le pipeline utilise le role pre-existant
+# LabRole / LabInstanceProfile (data sources des modules security et compute).
 # ---------------------------------------------------------------------------
 name: terraform
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environnement a planifier/deployer"
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+          - all
+        default: dev
 
 permissions:
   contents: read
 
+env:
+  TF_VERSION: "1.10.5"
+  AWS_REGION: "us-east-1"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  placeholder:
-    name: placeholder (phase 6 will replace this)
+  # -------------------------------------------------------------------------
+  # 0. Choisit la liste des environnements a traiter.
+  #    - pull_request      -> ["dev","test","prod"]
+  #    - push sur main     -> ["dev"]
+  #    - workflow_dispatch -> ["<choix>"] (ou les trois si "all")
+  # -------------------------------------------------------------------------
+  prepare:
+    name: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      environments: ${{ steps.select.outputs.environments }}
+    steps:
+      - name: Select environments
+        id: select
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.environment }}" != "all" ]; then
+            echo 'environments=["${{ inputs.environment }}"]' >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo 'environments=["dev"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'environments=["dev","test","prod"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  # -------------------------------------------------------------------------
+  # 1. Formatage : tout le depot doit etre deja formate.
+  # -------------------------------------------------------------------------
+  fmt:
+    name: fmt
     runs-on: ubuntu-latest
     steps:
-      - name: No-op
-        run: echo "The Terraform CI/CD pipeline is implemented in phase 6."
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive
+
+      - name: Bash syntax check
+        run: bash -n scripts/s3_bucket_admin.sh scripts/user_data.sh
+
+  # -------------------------------------------------------------------------
+  # 2. Validation statique de chaque module et de chaque environnement
+  #    (sans backend ni identifiants AWS).
+  # -------------------------------------------------------------------------
+  validate:
+    name: validate (${{ matrix.dir }})
+    runs-on: ubuntu-latest
+    needs: [fmt]
+    strategy:
+      fail-fast: false
+      matrix:
+        dir:
+          - modules/network
+          - modules/security
+          - modules/load-balancer
+          - modules/compute
+          - modules/database
+          - modules/storage
+          - environments/dev
+          - environments/test
+          - environments/prod
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform init (sans backend)
+        run: terraform init -backend=false -input=false
+        working-directory: ${{ matrix.dir }}
+
+      - name: terraform validate
+        run: terraform validate -no-color
+        working-directory: ${{ matrix.dir }}
+
+  # -------------------------------------------------------------------------
+  # 3. Plan : sur pull_request et workflow_dispatch.
+  # -------------------------------------------------------------------------
+  plan:
+    name: plan (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    needs: [prepare, validate]
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(needs.prepare.outputs.environments) }}
+    env:
+      TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+    defaults:
+      run:
+        working-directory: environments/${{ matrix.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform init
+        run: terraform init -input=false -no-color
+
+      - name: terraform plan
+        run: terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan
+
+      - name: Plan summary
+        run: terraform show -no-color tfplan | head -n 200 >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ matrix.environment }}
+          path: environments/${{ matrix.environment }}/tfplan
+          if-no-files-found: error
+          retention-days: 7
+
+  # -------------------------------------------------------------------------
+  # 4. Apply : sur push vers main et workflow_dispatch.
+  # -------------------------------------------------------------------------
+  apply:
+    name: apply (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    needs: [prepare, validate]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        environment: ${{ fromJSON(needs.prepare.outputs.environments) }}
+    env:
+      TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+    defaults:
+      run:
+        working-directory: environments/${{ matrix.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform init
+        run: terraform init -input=false -no-color
+
+      - name: terraform apply
+        run: terraform apply -input=false -auto-approve -no-color -lock-timeout=5m
+
+      - name: terraform output
+        run: terraform output -no-color >> "$GITHUB_STEP_SUMMARY"

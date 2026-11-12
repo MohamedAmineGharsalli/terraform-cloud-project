@@ -7,9 +7,9 @@ trois environnements (`dev`, `test`, `prod`) et validée/déployée par un pipel
 **GitHub Actions**.
 
 > 📌 **État de la documentation** — ce README est complété au fil des phases du
-> projet. Les sections *Architecture*, *Modules*, *Variables/Outputs*, *CI/CD*,
-> *Coûts* et *Dépannage* sont finalisées en phase 8. Les sections *Backend* et
-> *Limitation du Learner Lab* ci-dessous sont, elles, déjà complètes.
+> projet. Les sections *Architecture*, *Backend*, *Limitation du Learner Lab* et
+> *CI/CD* sont déjà complètes ; les sections *Modules*, *Variables/Outputs*,
+> *Coûts* et *Dépannage* sont finalisées en phase 8.
 
 ---
 
@@ -161,7 +161,71 @@ terraform destroy
 
 ---
 
-## 7. Documentation complémentaire
+## 7. CI/CD (GitHub Actions)
+
+Le pipeline est défini dans `.github/workflows/terraform.yml`. Il **ne crée
+aucune ressource IAM** : il utilise le rôle pré-existant `LabRole` /
+`LabInstanceProfile` du Learner Lab (via les *data sources* des modules
+`security` et `compute`).
+
+### 7.1 Déclencheurs
+
+| Événement | Environnements | Actions exécutées |
+|-----------|----------------|-------------------|
+| `pull_request` | `dev`, `test`, `prod` | `fmt` → `validate` → `plan` |
+| `push` sur `main` | `dev` | `fmt` → `validate` → `apply` |
+| `workflow_dispatch` | au choix (`dev`, `test`, `prod` ou `all`) | `fmt` → `validate` → `plan` → `apply` |
+
+> Par défaut, un `push` sur `main` ne déploie que **`dev`** (limite de budget).
+> Pour déployer `test` ou `prod`, lance le workflow manuellement
+> (*Actions → terraform → Run workflow*) et choisis l'environnement.
+
+### 7.2 Jobs
+
+| Job | Rôle |
+|-----|------|
+| `prepare` | Calcule la liste des environnements à traiter selon l'événement |
+| `fmt` | `terraform fmt -check -recursive` + vérification syntaxique des scripts bash (`bash -n`) |
+| `validate` | `terraform init -backend=false` + `terraform validate` pour les 6 modules et les 3 environnements (matrice) |
+| `plan` | `terraform init` (backend S3) + `terraform plan` ; le plan est publié dans le résumé du job et en artefact |
+| `apply` | `terraform init` + `terraform apply -auto-approve` puis `terraform output` |
+
+### 7.3 Secrets GitHub requis
+
+| Secret | Contenu |
+|--------|---------|
+| `AWS_ACCESS_KEY_ID` | Clé d'accès temporaire du Learner Lab |
+| `AWS_SECRET_ACCESS_KEY` | Secret d'accès temporaire |
+| `AWS_SESSION_TOKEN` | **Jeton de session** (obligatoire, les identifiants du lab sont temporaires) |
+| `DB_PASSWORD` | Mot de passe maître RDS (injecté via `TF_VAR_db_password`) |
+
+Les trois identifiants AWS sont copiés depuis *AWS Details → AWS CLI* du Learner
+Lab. **Ils expirent à chaque session** : pense à mettre à jour les secrets
+GitHub avant de relancer le pipeline.
+
+Configuration (une seule fois), au choix :
+
+```powershell
+# Via GitHub CLI
+gh secret set AWS_ACCESS_KEY_ID     --body "AKIA..."
+gh secret set AWS_SECRET_ACCESS_KEY --body "..."
+gh secret set AWS_SESSION_TOKEN     --body "..."
+gh secret set DB_PASSWORD           --body "un-mot-de-passe-solide"
+```
+
+ou dans l'interface : *Settings → Secrets and variables → Actions → New
+repository secret*.
+
+### 7.4 Ce qui n'est pas géré par le pipeline
+
+- Le **bucket d'état** doit exister **avant** le premier `init` : il est créé
+  hors Terraform par `scripts/bootstrap-backend.ps1` (section 4).
+- Le **bucket de stockage** applicatif est créé par le module `storage` via
+  `local-exec` (section 5), pas par le provider S3.
+
+---
+
+## 8. Documentation complémentaire
 
 | Fichier | Contenu |
 |---------|---------|
@@ -175,6 +239,6 @@ terraform destroy
 
 ---
 
-## 8. Licence
+## 9. Licence
 
 MIT — voir `LICENSE`.
