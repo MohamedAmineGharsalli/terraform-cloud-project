@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# Example variable values for the prod environment.
+#
+# Copy this file to terraform.tfvars and adjust it. terraform.tfvars is
+# git-ignored and must NEVER be committed.
+#
+# The database password is NOT set here: it is supplied through the
+# TF_VAR_db_password environment variable (local) or the DB_PASSWORD GitHub
+# secret (CI). See README.md.
+# ---------------------------------------------------------------------------
+
+project_name = "cloud5"
+aws_region   = "us-east-1"
+vpc_cidr     = "10.22.0.0/16"
+
+# High availability: one NAT gateway per Availability Zone.
+single_nat_gateway = false
+
+# Slightly larger fleet.
+instance_type    = "t3.micro"
+min_size         = 2
+max_size         = 4
+desired_capacity = 2
+
+# Multi-AZ database, longer backups, deletion protection, final snapshot.
+db_instance_class            = "db.t3.micro"
+db_allocated_storage         = 20
+db_multi_az                  = true
+db_backup_retention          = 7
+db_skip_final_snapshot       = false
+db_final_snapshot_identifier = "cloud5-prod-db-final"
+db_deletion_protection       = true
+db_apply_immediately         = false
+
+# Storage.
+enable_versioning = true
+
+# HTTPS can be enabled here with a domain and an ACM certificate.
+enable_https    = false
+certificate_arn = ""
