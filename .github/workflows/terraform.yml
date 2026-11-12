@@ -1,0 +1,19 @@
+# ---------------------------------------------------------------------------
+# PLACEHOLDER — the full CI/CD pipeline is implemented in phase 6.
+# Kept as a valid workflow so GitHub Actions does not report an invalid file.
+# ---------------------------------------------------------------------------
+name: terraform
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  placeholder:
+    name: placeholder (phase 6 will replace this)
+    runs-on: ubuntu-latest
+    steps:
+      - name: No-op
+        run: echo "The Terraform CI/CD pipeline is implemented in phase 6."

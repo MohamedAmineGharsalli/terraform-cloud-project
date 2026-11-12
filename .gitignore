@@ -1,0 +1,51 @@
+# ---------------------------------------------------------------------------
+# Terraform
+# ---------------------------------------------------------------------------
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Variable files: real values must never be committed.
+# The *.example files stay tracked (they contain no secret).
+*.tfvars
+*.tfvars.json
+
+# CLI config / override files
+.terraformrc
+terraform.rc
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Saved plans and rendered plans
+*.tfplan
+tfplan
+plan.txt
+plan.json
+
+# NOTE: .terraform.lock.hcl files ARE committed on purpose (dependency pinning).
+# They are deliberately NOT listed here.
+
+# ---------------------------------------------------------------------------
+# AWS credentials / secrets
+# ---------------------------------------------------------------------------
+.aws/
+.env
+.env.*
+*.pem
+*.ppk
+
+# NOTE: docs/tests/*.log are deliberately NOT ignored: they are deliverables
+# for the report and must not contain any sensitive value.
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
