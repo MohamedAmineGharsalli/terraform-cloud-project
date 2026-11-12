@@ -1,7 +1,8 @@
 # Sécurité — choix, justifications et limites
 
-> Document complété en phase 8. La section **Limitation du Learner Lab (SCP)**
-> ci-dessous est déjà définitive.
+> Document **définitif**. Il couvre la chaîne de Security Groups, l'accès sans
+> SSH, IMDSv2, le chiffrement, la gestion des secrets, et la limitation du
+> Learner Lab (SCP).
 
 ## 1. Chaîne de Security Groups (moindre privilège réseau)
 
@@ -16,19 +17,62 @@ les règles suivent automatiquement les instances, sans dépendre d'adresses IP.
 
 ## 2. Pas de SSH — accès via SSM Session Manager
 
-*(détaillé en phase 8)*
+Aucun port **22** n'est ouvert, ni sur le Security Group de l'ALB, ni sur celui
+des instances. L'administration se fait par **AWS Systems Manager Session
+Manager** : les instances portent le *instance profile* `LabInstanceProfile`, qui
+autorise l'agent SSM à s'enregistrer.
+
+Avantages :
+
+- **Surface d'attaque réduite** : aucun service d'administration exposé à
+  Internet, aucun *bastion* à maintenir.
+- **Pas de gestion de clés** : plus de paire SSH à générer, distribuer, révoquer.
+- **Traçabilité** : les sessions SSM sont journalisables (audit).
+- **Accès privé** : la session passe par l'agent SSM (sortie via le NAT), sans
+  ouvrir de port entrant.
 
 ## 3. IMDSv2 obligatoire, volumes chiffrés
 
-*(détaillé en phase 8)*
+**IMDSv2.** Le *Launch Template* impose `http_tokens = "required"`
+(`modules/compute/main.tf`). Le service de métadonnées n'accepte donc plus que
+les requêtes **avec jeton** (session-oriented). Cela bloque la principale classe
+d'attaques **SSRF** qui exploite IMDSv1 pour voler les identifiants du rôle de
+l'instance. Le script `scripts/user_data.sh` obtient explicitement un jeton
+(`PUT /latest/api/token`) avant de lire les métadonnées.
+
+**Volumes chiffrés.** Le volume racine est un **gp3 chiffré**
+(`encrypted = true`), `delete_on_termination = true`. Le chiffrement s'applique
+au repos comme aux snapshots.
 
 ## 4. Chiffrement au repos et de l'état
 
-*(détaillé en phase 8)*
+| Élément | Chiffrement |
+|---------|-------------|
+| Volume EBS des instances | `gp3` chiffré (clé AWS managée) |
+| Base de données RDS | `storage_encrypted = true` |
+| Bucket S3 applicatif | SSE-S3 (`AES256`) par défaut |
+| Bucket d'état Terraform | SSE-S3 (`AES256`) + `encrypt = true` dans le backend |
+| État en transit | HTTPS (SDK AWS), politique de bucket refusant le non-TLS |
+
+Les snapshots RDS et les sauvegardes héritent du chiffrement du volume.
 
 ## 5. Gestion des secrets
 
-*(détaillé en phase 8)*
+Principe : **aucun secret n'est écrit dans le dépôt**.
+
+| Secret | Local | CI/CD |
+|--------|-------|-------|
+| Mot de passe RDS | variable d'environnement `TF_VAR_db_password` | secret GitHub `DB_PASSWORD` |
+| Clé d'accès AWS | profil/credentials locaux (jamais versionnés) | secret `AWS_ACCESS_KEY_ID` |
+| Secret d'accès AWS | idem | secret `AWS_SECRET_ACCESS_KEY` |
+| Jeton de session AWS | idem | secret `AWS_SESSION_TOKEN` |
+
+- La variable `db_password` est déclarée `sensitive = true` : sa valeur n'apparaît
+  pas dans les sorties Terraform.
+- `.gitignore` exclut `*.tfvars`, `.env`, `.aws/`, `*.pem`, etc. Les fichiers
+  `terraform.tfvars.example` ne contiennent **que des exemples sans secret**.
+- Les identifiants du Learner Lab sont **temporaires** : ils sont fournis au
+  pipeline par les secrets GitHub et rafraîchis à chaque session.
 
 ## 6. Limitation du Learner Lab (SCP) et impact sécurité
 

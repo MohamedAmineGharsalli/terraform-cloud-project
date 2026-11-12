@@ -6,16 +6,11 @@ Infrastructure AWS **modulaire**, **sécurisée** et **reproductible**, déploy�
 trois environnements (`dev`, `test`, `prod`) et validée/déployée par un pipeline
 **GitHub Actions**.
 
-> 📌 **État de la documentation** — ce README est complété au fil des phases du
-> projet. Les sections *Architecture*, *Backend*, *Limitation du Learner Lab* et
-> *CI/CD* sont déjà complètes ; les sections *Modules*, *Variables/Outputs*,
-> *Coûts* et *Dépannage* sont finalisées en phase 8.
-
 ---
 
 ## 1. Architecture (résumé)
 
-- **VPC** `10.20.0.0/16` sur **2 zones de disponibilité** (us-east-1a / us-east-1b).
+- **VPC** `10.20.0.0/16` (dev) sur **2 zones de disponibilité** (us-east-1a / us-east-1b).
 - 2 sous-réseaux **publics** (ALB), 2 sous-réseaux **privés applicatifs** (EC2),
   2 sous-réseaux **privés base de données** (RDS, sans route vers Internet).
 - **Internet Gateway** + **NAT Gateway** (une seule en dev/test via
@@ -25,6 +20,8 @@ trois environnements (`dev`, `test`, `prod`) et validée/déployée par un pipel
 - **RDS MySQL** privé, chiffré, dans un groupe de sous-réseaux dédiés.
 - **Bucket S3** pour les ressources/journaux (versioning, chiffrement, cycle de vie).
 - **Backend Terraform distant** (S3 + verrou natif) et **pipeline CI/CD**.
+
+> Schéma complet : `docs/architecture.md`.
 
 ---
 
@@ -58,7 +55,7 @@ aws sts get-caller-identity
 ```
 
 > Les trois valeurs **expirent à chaque session** de lab : pense à les rafraîchir
-> (et à mettre à jour les secrets GitHub, voir la section CI/CD).
+> (et à mettre à jour les secrets GitHub, voir la section **CI/CD**).
 
 ---
 
@@ -117,21 +114,20 @@ refuse l'action `s3:GetBucketObjectLockConfiguration`. Or le provider
 Terraform annule). Le problème est **indépendant de la version du provider**
 (testé avec `5.100.0` et `5.40.0`).
 
-**Contournement retenu.** Le bucket d'état (et, en phase 4, le bucket de
-stockage applicatif) est **créé et configuré hors Terraform** via l'AWS CLI
-(`scripts/bootstrap-backend.ps1`). Terraform gère ensuite le reste de
-l'infrastructure normalement.
+**Contournement retenu.**
 
-**Conséquence.** Le bucket n'est plus géré par le state Terraform : il n'est pas
-supprimé par `terraform destroy` (ce qui est souhaitable pour le bucket d'état,
-qui doit survivre aux environnements). Les protections sont appliquées de façon
-**idempotente** par le script.
+- Le **bucket d'état** est créé **hors Terraform** par
+  `scripts/bootstrap-backend.ps1` (AWS CLI, idempotent).
+- Le **bucket applicatif** (module `storage`) est créé par un `terraform_data` +
+  `local-exec` (AWS CLI), ce qui contourne le SCP **tout en gardant le bucket
+  dans le state Terraform**.
 
-> 🔎 Le même SCP peut affecter les sous-ressources
-> `aws_s3_bucket_versioning`, `aws_s3_bucket_server_side_encryption_configuration`,
-> `aws_s3_bucket_public_access_block` et `aws_s3_bucket_lifecycle_configuration`.
-> En phase 4, si l'une d'elles est refusée, on basculera sur le même contournement
-> (`aws s3api put-bucket-*` via `local-exec`). Voir `docs/notes-storage-module.md`.
+**Conséquence.** Le bucket d'état n'est pas géré par le state Terraform : il
+n'est pas supprimé par `terraform destroy` (souhaitable pour un bucket d'état).
+Les protections sont appliquées de façon **idempotente** par le script.
+
+> Détails de conception : `docs/notes-storage-module.md`. Impact sécurité :
+> `docs/securite.md` §6.
 
 ---
 
@@ -142,7 +138,7 @@ cd environments/dev
 terraform init
 terraform fmt -recursive
 terraform validate
-terraform plan  -var="db_password=$env:TF_VAR_db_password"
+terraform plan
 terraform apply
 ```
 
@@ -153,44 +149,77 @@ fourni par la variable d'environnement `TF_VAR_db_password`.
 $env:TF_VAR_db_password = "un-mot-de-passe-solide"
 ```
 
+Afficher les résultats :
+
+```powershell
+terraform output website_url   # URL de l'application (ALB)
+terraform output db_endpoint   # endpoint RDS
+terraform output bucket_id     # bucket S3
+```
+
 Destruction (à faire après la démonstration) :
 
 ```powershell
 terraform destroy
 ```
 
+> Chaque environnement est **fonctionnel par défaut** (les valeurs par défaut de
+> `variables.tf` suffisent). Copie `terraform.tfvars.example` vers
+> `terraform.tfvars` uniquement si tu veux personnaliser.
+
 ---
 
-## 7. CI/CD (GitHub Actions)
+## 7. Tests
+
+```powershell
+# Suites par défaut (terraform + scripts) : aucun identifiant AWS requis
+./tests/run-tests.ps1
+
+# Tout, y compris les tests AWS (identifiants Learner Lab requis)
+./tests/run-tests.ps1 -Suite all -IncludeAws
+```
+
+| Suite | Identifiants AWS | Contenu |
+|-------|------------------|---------|
+| `terraform` | non | `fmt -check`, `validate` (6 modules + 3 envs), rendu du template `user_data.sh` |
+| `scripts` | non | fins de ligne LF, `bash -n`, arguments des scripts, contenu `user_data.sh` |
+| `aws` | oui | identité AWS, bucket d'état, cycle de vie d'un bucket versionné temporaire |
+
+Le journal est écrit dans `docs/tests/run-tests.log`. Détails : `tests/README.md`.
+
+---
+
+## 8. CI/CD (GitHub Actions)
 
 Le pipeline est défini dans `.github/workflows/terraform.yml`. Il **ne crée
 aucune ressource IAM** : il utilise le rôle pré-existant `LabRole` /
 `LabInstanceProfile` du Learner Lab (via les *data sources* des modules
 `security` et `compute`).
 
-### 7.1 Déclencheurs
+### 8.1 Déclencheurs
 
 | Événement | Environnements | Actions exécutées |
 |-----------|----------------|-------------------|
-| `pull_request` | `dev`, `test`, `prod` | `fmt` → `validate` → `plan` |
-| `push` sur `main` | `dev` | `fmt` → `validate` → `apply` |
-| `workflow_dispatch` | au choix (`dev`, `test`, `prod` ou `all`) | `fmt` → `validate` → `plan` → `apply` |
+| `pull_request` | `dev`, `test`, `prod` | `fmt` → `validate` → `test` → `plan` |
+| `push` sur `main` | `dev` | `fmt` → `validate` → `test` → `apply` |
+| `workflow_dispatch` | au choix (`dev`, `test`, `prod` ou `all`) | `fmt` → `validate` → `test` → `plan` → `apply` |
 
 > Par défaut, un `push` sur `main` ne déploie que **`dev`** (limite de budget).
 > Pour déployer `test` ou `prod`, lance le workflow manuellement
 > (*Actions → terraform → Run workflow*) et choisis l'environnement.
 
-### 7.2 Jobs
+### 8.2 Jobs
 
 | Job | Rôle |
 |-----|------|
 | `prepare` | Calcule la liste des environnements à traiter selon l'événement |
-| `fmt` | `terraform fmt -check -recursive` + vérification syntaxique des scripts bash (`bash -n`) |
+| `fmt` | `terraform fmt -check -recursive` |
 | `validate` | `terraform init -backend=false` + `terraform validate` pour les 6 modules et les 3 environnements (matrice) |
+| `test` | `tests/run-tests.ps1 -Suite scripts` (tests des scripts, via `pwsh`) |
 | `plan` | `terraform init` (backend S3) + `terraform plan` ; le plan est publié dans le résumé du job et en artefact |
 | `apply` | `terraform init` + `terraform apply -auto-approve` puis `terraform output` |
 
-### 7.3 Secrets GitHub requis
+### 8.3 Secrets GitHub requis
 
 | Secret | Contenu |
 |--------|---------|
@@ -216,7 +245,7 @@ gh secret set DB_PASSWORD           --body "un-mot-de-passe-solide"
 ou dans l'interface : *Settings → Secrets and variables → Actions → New
 repository secret*.
 
-### 7.4 Ce qui n'est pas géré par le pipeline
+### 8.4 Ce qui n'est pas géré par le pipeline
 
 - Le **bucket d'état** doit exister **avant** le premier `init` : il est créé
   hors Terraform par `scripts/bootstrap-backend.ps1` (section 4).
@@ -225,20 +254,124 @@ repository secret*.
 
 ---
 
-## 8. Documentation complémentaire
+## 9. Modules
 
-| Fichier | Contenu |
-|---------|---------|
-| `docs/architecture.md` | Schéma d'architecture (Mermaid) — *phase 8* |
-| `docs/securite.md` | Justification des choix de sécurité (+ limitation SCP) |
-| `docs/couts.md` | Ressources facturables et estimation — *phase 8* |
-| `docs/rapport.md` | Rapport de projet 10–15 pages |
-| `docs/soutenance.md` | Support de soutenance — *phase 8* |
-| `docs/notes-storage-module.md` | Note de conception du module `storage` (phase 4) |
-| `CHECKLIST.md` | Correspondance exigences ↔ fichiers — *phase 8* |
+| Module | Responsabilité | README |
+|--------|----------------|--------|
+| `network` | VPC, sous-réseaux (public/app/db), IGW, NAT, tables de routage | `modules/network/README.md` |
+| `security` | Security Groups chaînés + *data sources* `LabRole`/`LabInstanceProfile` | `modules/security/README.md` |
+| `load-balancer` | ALB, groupe cible, écouteurs HTTP/HTTPS | `modules/load-balancer/README.md` |
+| `compute` | AMI AL2023, Launch Template, Auto Scaling Group, scaling CPU | `modules/compute/README.md` |
+| `database` | Groupe de sous-réseaux + instance RDS MySQL privée | `modules/database/README.md` |
+| `storage` | Bucket S3 privé (via `terraform_data` + AWS CLI) | `modules/storage/README.md` |
+
+Chaque module a ses propres `variables.tf`, `outputs.tf`, `versions.tf` et
+`README.md`. Les environnements ne font que **câbler** ces modules.
 
 ---
 
-## 9. Licence
+## 10. Variables et sorties
+
+### 10.1 Variables principales (environnements)
+
+Valeurs par défaut **`dev`** (voir `environments/dev/variables.tf`) ; les
+défauts de `test`/`prod` diffèrent (voir §11 et `docs/architecture.md` §4).
+
+| Variable | Défaut (dev) | Rôle |
+|----------|--------------|------|
+| `project_name` | `cloud5` | Préfixe de nommage + affiché sur la page |
+| `aws_region` | `us-east-1` | Région (imposée par le lab) |
+| `vpc_cidr` | `10.20.0.0/16` | CIDR du VPC (`10.21`/`10.22` en test/prod) |
+| `single_nat_gateway` | `true` | `true` = 1 NAT ; `false` = 1 par AZ (prod) |
+| `enable_https` / `certificate_arn` | `false` / `""` | Écouteur HTTPS (domaine + ACM requis) |
+| `instance_type` | `t3.micro` | Type des instances |
+| `min_size` / `max_size` / `desired_capacity` | `2` / `3` / `2` | Dimensionnement de l'ASG |
+| `cpu_target_value` | `50` | Cible CPU (%) du scaling |
+| `use_ssm_ami` | `true` | Résout l'AMI via SSM (repli `aws_ami`) |
+| `db_name` / `db_username` | `cloud5db` / `cloud5admin` | Base et utilisateur RDS |
+| `db_password` | — (**requis**, sensible) | Mot de passe RDS (`TF_VAR_db_password`) |
+| `db_instance_class` | `db.t3.micro` | Classe RDS |
+| `db_allocated_storage` | `20` | Stockage RDS (Go) |
+| `db_multi_az` | `false` | RDS Multi-AZ (`true` en prod) |
+| `db_backup_retention` | `1` | Jours de sauvegarde (1 / 3 / 7) |
+| `db_skip_final_snapshot` | `true` | Snapshot final (`false` en prod) |
+| `db_final_snapshot_identifier` | `""` | Nom du snapshot final (prod) |
+| `db_deletion_protection` | `false` | Protection suppression (`true` en prod) |
+| `db_apply_immediately` | `true` | Application immédiate des changements |
+| `bucket_name` | `""` | Nom S3 explicite (sinon calculé) |
+| `enable_versioning` | `true` | Versioning S3 |
+| `tags` | `{}` | Tags additionnels |
+
+### 10.2 Sorties (environnements)
+
+| Sortie | Description |
+|--------|-------------|
+| `website_url` | URL de l'application via l'ALB |
+| `alb_dns_name` | DNS de l'ALB |
+| `vpc_id` | Identifiant du VPC |
+| `app_subnet_ids` | Sous-réseaux applicatifs privés |
+| `asg_name` | Nom de l'Auto Scaling Group |
+| `db_endpoint` / `db_address` / `db_name` | Connexion RDS |
+| `bucket_id` / `bucket_arn` | Bucket S3 applicatif |
+| `lab_role_arn` | ARN du rôle pré-existant `LabRole` |
+| `name_prefix` | Préfixe de nommage de l'environnement |
+
+> Le détail des variables/sorties de **chaque module** figure dans son
+> `modules/<module>/README.md`.
+
+---
+
+## 11. Coûts
+
+| Environnement | Estimation / mois | Estimation / heure |
+|---------------|-------------------|--------------------|
+| `dev` | ~82 $ | ~0,11 $ |
+| `test` | ~82 $ | ~0,11 $ |
+| `prod` | ~128 $ | ~0,18 $ |
+
+Le **NAT Gateway** est le premier poste (~40 %) : d'où un **NAT unique** en
+`dev`/`test`. Les ressources sont facturées **à l'heure** : une démonstration de
+quelques heures coûte moins d'un dollar, mais laisser tourner les trois
+environnements un mois consomme plus que le crédit du lab.
+
+**→ `terraform destroy` après chaque démonstration.**
+
+Détails et optimisations : `docs/couts.md`.
+
+---
+
+## 12. Dépannage
+
+| Symptôme | Cause probable | Solution |
+|----------|----------------|----------|
+| `Error: ... s3:GetBucketObjectLockConfiguration` | SCP du lab | Normal : ne pas utiliser `aws_s3_bucket`. Le bucket est créé par AWS CLI (section 5). |
+| `terraform init` : `AccessDenied` sur le backend | Identifiants expirés, ou bucket d'état absent | Rafraîchir les identifiants ; lancer `./scripts/bootstrap-backend.ps1` |
+| `Error acquiring the state lock` | Verrou resté après un run interrompu | Attendre, ou (si sûr) `terraform force-unlock <ID>` |
+| `Error: creating IAM Role ...` | Création IAM interdite dans le lab | Utiliser `LabRole` / `LabInstanceProfile` (déjà le cas) |
+| Les instances ne s'enregistrent pas (cible *unhealthy*) | Route NAT absente au démarrage | `depends_on = [module.network]` (déjà présent) ; attendre ~2 min |
+| `db_password` manquant | Variable non fournie | `$env:TF_VAR_db_password = "..."` (ou secret `DB_PASSWORD`) |
+| CI : `plan`/`apply` en échec | Secrets GitHub absents ou expirés | Rafraîchir `AWS_*` et `DB_PASSWORD` (section 8.3) |
+| Tests bash sous Windows : *No such file or directory* | Chemin Windows mangé par bash | Utiliser `tests/run-tests.ps1` (gère déjà le cas) |
+| `terraform fmt -check` échoue en CI | Fichier non formaté | `terraform fmt -recursive` puis commit |
+
+---
+
+## 13. Documentation complémentaire
+
+| Fichier | Contenu |
+|---------|---------|
+| `docs/architecture.md` | Schéma d'architecture (Mermaid) et découpage réseau |
+| `docs/securite.md` | Justification des choix de sécurité (+ limitation SCP) |
+| `docs/couts.md` | Ressources facturables et estimation |
+| `docs/rapport.md` | Rapport de projet 10–15 pages |
+| `docs/soutenance.md` | Plan de soutenance, démo et questions/réponses |
+| `docs/notes-storage-module.md` | Note de conception du module `storage` |
+| `tests/README.md` | Documentation de la suite de tests |
+| `CHECKLIST.md` | Correspondance exigences ↔ fichiers |
+| `modules/*/README.md` | Documentation de chaque module |
+
+---
+
+## 14. Licence
 
 MIT — voir `LICENSE`.
