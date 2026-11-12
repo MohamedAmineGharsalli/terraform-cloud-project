@@ -2,9 +2,14 @@
 # Pipeline CI/CD Terraform - projet cloud5
 #
 # Declencheurs :
-#   - pull_request      : fmt + validate + plan sur les 3 environnements
-#   - push sur main     : fmt + validate + apply sur dev
+#   - pull_request      : fmt + validate + test + plan sur les 3 environnements
+#                         (le plan est publie en commentaire de PR)
+#   - push sur main     : fmt + validate + test + apply sur dev uniquement
 #   - workflow_dispatch : plan + apply sur l'environnement choisi (ou tous)
+#
+# Chaque job d'apply declare un "environment" GitHub (dev / test / prod) : les
+# protections et secrets de l'environnement s'appliquent, et l'historique de
+# deploiement est trace par environnement.
 #
 # Les identifiants AWS du Learner Lab sont TEMPORAIRES (cle + secret + jeton de
 # session) et proviennent des secrets GitHub :
@@ -32,6 +37,7 @@ on:
           - all
         default: dev
 
+# Permissions minimales par defaut : lecture seule du depot.
 permissions:
   contents: read
 
@@ -41,15 +47,12 @@ env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
 
-concurrency:
-  group: terraform-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   # -------------------------------------------------------------------------
-  # 0. Choisit la liste des environnements a traiter.
-  #    - pull_request      -> ["dev","test","prod"]
-  #    - push sur main     -> ["dev"]
+  # 0. Choisit la liste des environnements a traiter et, pour chaque
+  #    environnement, si le job d'apply correspondant doit s'executer.
+  #    - pull_request      -> plan sur ["dev","test","prod"], aucun apply
+  #    - push sur main     -> apply sur dev uniquement
   #    - workflow_dispatch -> ["<choix>"] (ou les trois si "all")
   # -------------------------------------------------------------------------
   prepare:
@@ -57,17 +60,56 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       environments: ${{ steps.select.outputs.environments }}
+      run_dev: ${{ steps.select.outputs.run_dev }}
+      run_test: ${{ steps.select.outputs.run_test }}
+      run_prod: ${{ steps.select.outputs.run_prod }}
+    env:
+      DISPATCH_ENV: ${{ inputs.environment }}
     steps:
       - name: Select environments
         id: select
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.environment }}" != "all" ]; then
-            echo 'environments=["${{ inputs.environment }}"]' >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "push" ]; then
-            echo 'environments=["dev"]' >> "$GITHUB_OUTPUT"
+          run_dev=false
+          run_test=false
+          run_prod=false
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            case "${DISPATCH_ENV:-dev}" in
+              all)
+                run_dev=true; run_test=true; run_prod=true
+                environments='["dev","test","prod"]'
+                ;;
+              dev)
+                run_dev=true
+                environments='["dev"]'
+                ;;
+              test)
+                run_test=true
+                environments='["test"]'
+                ;;
+              prod)
+                run_prod=true
+                environments='["prod"]'
+                ;;
+              *)
+                echo "Environnement inconnu : ${DISPATCH_ENV}" >&2
+                exit 1
+                ;;
+            esac
+          elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            run_dev=true
+            environments='["dev"]'
           else
-            echo 'environments=["dev","test","prod"]' >> "$GITHUB_OUTPUT"
+            # pull_request : plan sur les trois environnements, aucun apply.
+            environments='["dev","test","prod"]'
           fi
+
+          {
+            echo "environments=${environments}"
+            echo "run_dev=${run_dev}"
+            echo "run_test=${run_test}"
+            echo "run_prod=${run_prod}"
+          } >> "$GITHUB_OUTPUT"
 
   # -------------------------------------------------------------------------
   # 1. Formatage : tout le depot doit etre deja formate.
@@ -143,12 +185,20 @@ jobs:
 
   # -------------------------------------------------------------------------
   # 4. Plan : sur pull_request et workflow_dispatch.
+  #    Le plan binaire n'est jamais publie : seul un plan.txt lisible est
+  #    affiche (resume du job) et, sur PR, poste en commentaire.
   # -------------------------------------------------------------------------
   plan:
     name: plan (${{ matrix.environment }})
     runs-on: ubuntu-latest
     needs: [prepare, validate]
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      pull-requests: write
+    concurrency:
+      group: terraform-plan-${{ matrix.environment }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
@@ -159,6 +209,26 @@ jobs:
       run:
         working-directory: environments/${{ matrix.environment }}
     steps:
+      # Fail fast with a readable message if a required secret is missing.
+      # Only the NAMES of the missing secrets are printed, never their values.
+      - name: Check required secrets
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: |
+          missing=""
+          if [ -z "${AWS_ACCESS_KEY_ID}" ]; then missing="${missing} AWS_ACCESS_KEY_ID"; fi
+          if [ -z "${AWS_SECRET_ACCESS_KEY}" ]; then missing="${missing} AWS_SECRET_ACCESS_KEY"; fi
+          if [ -z "${AWS_SESSION_TOKEN}" ]; then missing="${missing} AWS_SESSION_TOKEN"; fi
+          if [ -z "${DB_PASSWORD}" ]; then missing="${missing} DB_PASSWORD"; fi
+          if [ -n "${missing}" ]; then
+            echo "::error::Missing or empty GitHub secrets:${missing}. Set them in Settings > Secrets and variables > Actions (the AWS credentials expire at every lab session)."
+            exit 1
+          fi
+          echo "All required secrets are present."
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -169,6 +239,10 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
+
+      # Clear early failure if the credentials are missing or expired.
+      - name: Verify AWS credentials
+        run: aws sts get-caller-identity
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -181,36 +255,113 @@ jobs:
       - name: terraform plan
         run: terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan
 
+      # Rendu lisible du plan (sans couleurs) : c'est ce fichier, et non le
+      # binaire tfplan, qui est publie.
+      - name: terraform show (plan.txt)
+        run: terraform show -no-color tfplan > plan.txt
+
       - name: Plan summary
-        run: terraform show -no-color tfplan | head -n 200 >> "$GITHUB_STEP_SUMMARY"
+        run: head -n 200 plan.txt >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload plan
-        uses: actions/upload-artifact@v4
+      # Commentaire de PR : plan tronque (limite GitHub ~65536 caracteres) et
+      # sans couleurs. Un marqueur par environnement permet de mettre a jour le
+      # commentaire existant plutot que d'en creer un nouveau a chaque push.
+      - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          PLAN_FILE: environments/${{ matrix.environment }}/plan.txt
+          PLAN_MARKER: "<!-- terraform-plan:${{ matrix.environment }} -->"
         with:
-          name: tfplan-${{ matrix.environment }}
-          path: environments/${{ matrix.environment }}/tfplan
-          if-no-files-found: error
-          retention-days: 7
+          script: |
+            const fs = require('fs');
+            const marker = process.env.PLAN_MARKER;
+            const max = 60000;
+
+            let plan = '';
+            try {
+              plan = fs.readFileSync(process.env.PLAN_FILE, 'utf8');
+            } catch (error) {
+              plan = `(plan.txt introuvable : ${error.message})`;
+            }
+
+            let truncated = false;
+            if (plan.length > max) {
+              plan = plan.slice(0, max);
+              truncated = true;
+            }
+
+            const lines = [
+              marker,
+              `### Terraform plan — \`${{ matrix.environment }}\``,
+              '',
+              '```terraform',
+              plan,
+              '```',
+            ];
+            if (truncated) {
+              lines.push('', '> ⚠️ Plan tronqué (limite d’affichage de GitHub).');
+            }
+            const body = lines.join('\n');
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number }
+            );
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body,
+              });
+            }
 
   # -------------------------------------------------------------------------
-  # 5. Apply : sur push vers main et workflow_dispatch.
+  # 5. Apply : uniquement sur main (push ou workflow_dispatch depuis main).
+  #    Le plan et l'apply s'executent dans le MEME job : l'apply consomme
+  #    exactement le plan produit (aucun tfplan transmis entre jobs).
   # -------------------------------------------------------------------------
-  apply:
-    name: apply (${{ matrix.environment }})
+  apply-dev:
+    name: apply (dev)
     runs-on: ubuntu-latest
     needs: [prepare, validate]
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        environment: ${{ fromJSON(needs.prepare.outputs.environments) }}
+    if: github.ref == 'refs/heads/main' && needs.prepare.outputs.run_dev == 'true'
+    environment: dev
+    concurrency:
+      group: terraform-apply-dev
+      cancel-in-progress: false
     env:
       TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
     defaults:
       run:
-        working-directory: environments/${{ matrix.environment }}
+        working-directory: environments/dev
     steps:
+      # Fail fast with a readable message if a required secret is missing.
+      # Only the NAMES of the missing secrets are printed, never their values.
+      - name: Check required secrets
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: |
+          missing=""
+          if [ -z "${AWS_ACCESS_KEY_ID}" ]; then missing="${missing} AWS_ACCESS_KEY_ID"; fi
+          if [ -z "${AWS_SECRET_ACCESS_KEY}" ]; then missing="${missing} AWS_SECRET_ACCESS_KEY"; fi
+          if [ -z "${AWS_SESSION_TOKEN}" ]; then missing="${missing} AWS_SESSION_TOKEN"; fi
+          if [ -z "${DB_PASSWORD}" ]; then missing="${missing} DB_PASSWORD"; fi
+          if [ -n "${missing}" ]; then
+            echo "::error::Missing or empty GitHub secrets:${missing}. Set them in Settings > Secrets and variables > Actions (the AWS credentials expire at every lab session)."
+            exit 1
+          fi
+          echo "All required secrets are present."
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -222,6 +373,10 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # Clear early failure if the credentials are missing or expired.
+      - name: Verify AWS credentials
+        run: aws sts get-caller-identity
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -230,8 +385,145 @@ jobs:
       - name: terraform init
         run: terraform init -input=false -no-color
 
+      - name: terraform plan
+        run: terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan
+
       - name: terraform apply
-        run: terraform apply -input=false -auto-approve -no-color -lock-timeout=5m
+        run: terraform apply -input=false -no-color -lock-timeout=5m tfplan
+
+      - name: terraform output
+        run: terraform output -no-color >> "$GITHUB_STEP_SUMMARY"
+
+  apply-test:
+    name: apply (test)
+    runs-on: ubuntu-latest
+    needs: [prepare, validate]
+    if: github.ref == 'refs/heads/main' && needs.prepare.outputs.run_test == 'true'
+    environment: test
+    concurrency:
+      group: terraform-apply-test
+      cancel-in-progress: false
+    env:
+      TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+    defaults:
+      run:
+        working-directory: environments/test
+    steps:
+      # Fail fast with a readable message if a required secret is missing.
+      # Only the NAMES of the missing secrets are printed, never their values.
+      - name: Check required secrets
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: |
+          missing=""
+          if [ -z "${AWS_ACCESS_KEY_ID}" ]; then missing="${missing} AWS_ACCESS_KEY_ID"; fi
+          if [ -z "${AWS_SECRET_ACCESS_KEY}" ]; then missing="${missing} AWS_SECRET_ACCESS_KEY"; fi
+          if [ -z "${AWS_SESSION_TOKEN}" ]; then missing="${missing} AWS_SESSION_TOKEN"; fi
+          if [ -z "${DB_PASSWORD}" ]; then missing="${missing} DB_PASSWORD"; fi
+          if [ -n "${missing}" ]; then
+            echo "::error::Missing or empty GitHub secrets:${missing}. Set them in Settings > Secrets and variables > Actions (the AWS credentials expire at every lab session)."
+            exit 1
+          fi
+          echo "All required secrets are present."
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Clear early failure if the credentials are missing or expired.
+      - name: Verify AWS credentials
+        run: aws sts get-caller-identity
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform init
+        run: terraform init -input=false -no-color
+
+      - name: terraform plan
+        run: terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan
+
+      - name: terraform apply
+        run: terraform apply -input=false -no-color -lock-timeout=5m tfplan
+
+      - name: terraform output
+        run: terraform output -no-color >> "$GITHUB_STEP_SUMMARY"
+
+  apply-prod:
+    name: apply (prod)
+    runs-on: ubuntu-latest
+    needs: [prepare, validate]
+    if: github.ref == 'refs/heads/main' && needs.prepare.outputs.run_prod == 'true'
+    environment: prod
+    concurrency:
+      group: terraform-apply-prod
+      cancel-in-progress: false
+    env:
+      TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+    defaults:
+      run:
+        working-directory: environments/prod
+    steps:
+      # Fail fast with a readable message if a required secret is missing.
+      # Only the NAMES of the missing secrets are printed, never their values.
+      - name: Check required secrets
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: |
+          missing=""
+          if [ -z "${AWS_ACCESS_KEY_ID}" ]; then missing="${missing} AWS_ACCESS_KEY_ID"; fi
+          if [ -z "${AWS_SECRET_ACCESS_KEY}" ]; then missing="${missing} AWS_SECRET_ACCESS_KEY"; fi
+          if [ -z "${AWS_SESSION_TOKEN}" ]; then missing="${missing} AWS_SESSION_TOKEN"; fi
+          if [ -z "${DB_PASSWORD}" ]; then missing="${missing} DB_PASSWORD"; fi
+          if [ -n "${missing}" ]; then
+            echo "::error::Missing or empty GitHub secrets:${missing}. Set them in Settings > Secrets and variables > Actions (the AWS credentials expire at every lab session)."
+            exit 1
+          fi
+          echo "All required secrets are present."
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Clear early failure if the credentials are missing or expired.
+      - name: Verify AWS credentials
+        run: aws sts get-caller-identity
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform init
+        run: terraform init -input=false -no-color
+
+      - name: terraform plan
+        run: terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan
+
+      - name: terraform apply
+        run: terraform apply -input=false -no-color -lock-timeout=5m tfplan
 
       - name: terraform output
         run: terraform output -no-color >> "$GITHUB_STEP_SUMMARY"

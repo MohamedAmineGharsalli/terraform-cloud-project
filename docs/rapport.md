@@ -133,9 +133,15 @@ Le pipeline `.github/workflows/terraform.yml` s'exécute sur `ubuntu-latest` :
 | `fmt` | toujours | `terraform fmt -check -recursive` |
 | `validate` | toujours | `init -backend=false` + `validate` (6 modules + 3 envs) |
 | `test` | toujours | `tests/run-tests.ps1 -Suite scripts` (pwsh) |
-| `plan` | PR / manuel | `init` + `plan` (backend S3), publié en résumé + artefact |
-| `apply` | `main` / manuel | `init` + `apply -auto-approve` + `output` |
+| `plan` | PR / manuel | `init` + `plan -out=tfplan` (backend S3) ; `plan.txt` (sans couleurs) publié en résumé et en commentaire de PR (tronqué) |
+| `apply-dev` / `apply-test` / `apply-prod` | `main` / manuel | `init` + `plan -out=tfplan` **puis** `apply tfplan` dans le même job, + `output`. Chaque job déclare un *environment* GitHub et sa propre groupe de concurrence |
 
+- Les jobs d'`apply` ne s'exécutent que sur `main`
+  (`if: github.ref == 'refs/heads/main'`), avec `environment: dev|test|prod` et
+  `concurrency.cancel-in-progress: false`.
+- Le **plan binaire** n'est jamais publié : seul le rendu lisible `plan.txt`
+  l'est. Permissions minimales (`contents: read`, `pull-requests: write` pour
+  `plan`).
 - **Aucune ressource IAM** n'est créée : le pipeline utilise `LabRole` /
   `LabInstanceProfile`.
 - Un `push` sur `main` déploie **`dev`** uniquement (budget) ; `test`/`prod` via
