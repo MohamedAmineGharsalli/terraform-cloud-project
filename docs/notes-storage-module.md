@@ -120,17 +120,31 @@ Puis, pour chaque provisioner :
 - **Création** — l'OS est connu à la compilation :
 
 ```hcl
+# Chemins absolus, en slashes, SANS guillemets (voir plus bas : piège cmd.exe)
+ps1_script = abspath("${path.module}/../../scripts/s3_bucket_admin.ps1")
+sh_script  = abspath("${path.module}/../../scripts/s3_bucket_admin.sh")
+
 command = local.is_windows
-  ? "powershell -NoProfile -ExecutionPolicy Bypass -File \"${path.module}/../../scripts/s3_bucket_admin.ps1\" -Action create -Bucket ${local.bucket_name} -Region ${var.aws_region}"
-  : "bash \"${path.module}/../../scripts/s3_bucket_admin.sh\" create ${local.bucket_name} ${var.aws_region}"
+  ? "powershell -NoProfile -ExecutionPolicy Bypass -File ${local.ps1_script} -Action create -Bucket ${local.bucket_name} -Region ${var.aws_region}"
+  : "bash ${local.sh_script} create ${local.bucket_name} ${var.aws_region}"
 ```
 
 - **Destruction** — l'OS **n'est pas** connu (seul `self`/`path.module` sont
   lisibles). La commande essaie donc PowerShell puis bascule sur bash :
 
 ```hcl
-command = "powershell -NoProfile -ExecutionPolicy Bypass -File \"${path.module}/../../scripts/s3_bucket_admin.ps1\" -Action destroy -Bucket ${self.input.bucket} -Region ${self.input.region} || bash \"${path.module}/../../scripts/s3_bucket_admin.sh\" destroy ${self.input.bucket} ${self.input.region}"
+command = "powershell -NoProfile -ExecutionPolicy Bypass -File ${abspath("${path.module}/../../scripts/s3_bucket_admin.ps1")} -Action destroy -Bucket ${self.input.bucket} -Region ${self.input.region} || bash ${abspath("${path.module}/../../scripts/s3_bucket_admin.sh")} destroy ${self.input.bucket} ${self.input.region}"
 ```
+
+> **Piège Windows — les guillemets autour du chemin du script.** Sous Windows,
+> Terraform exécute la commande via `cmd /C` et Go met l'argument entier entre
+> guillemets ; les guillemets **internes** deviennent alors un `\"` littéral que
+> `powershell.exe` reçoit tel quel et rejette :
+> `Caractères non conformes dans le chemin d'accès` (code `0xfffd0000`). Le
+> chemin du dépôt ne contient pas d'espace : les chemins sont donc construits
+> avec `abspath()` (qui renvoie déjà des slashes sous Windows) et laissés
+> **sans guillemets**. Vérifié sous `cmd.exe` et PowerShell (création +
+> destruction, bucket supprimé).
 
 Deux petits scripts `scripts/s3_bucket_admin.ps1` et `scripts/s3_bucket_admin.sh`
 implémentent `create` et `destroy` (suppression des versions + delete markers +

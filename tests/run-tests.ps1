@@ -52,7 +52,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$script:IsWindows = ($env:OS -eq 'Windows_NT')
+$script:RunningOnWindows = ($env:OS -eq 'Windows_NT')
 $script:Passed = 0
 $script:Failed = 0
 $script:Results = New-Object System.Collections.Generic.List[object]
@@ -294,7 +294,7 @@ function Remove-TestBucket {
     $scriptsDir = Join-Path $script:RepoRoot 'scripts'
     $ps1 = Join-Path $scriptsDir 's3_bucket_admin.ps1'
 
-    if ($script:IsWindows -and $psHost) {
+    if ($script:RunningOnWindows -and $psHost) {
         Invoke-Native $psHost @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ps1, '-Action', 'destroy', '-Bucket', $Bucket, '-Region', 'us-east-1') $script:RepoRoot | Out-Null
     }
     elseif ($bash) {

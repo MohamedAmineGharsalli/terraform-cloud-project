@@ -68,7 +68,7 @@ Légende : ✅ fait · ⚠️ écart assumé (contrainte du Learner Lab, documen
 | Pipeline GitHub Actions | ✅ | `.github/workflows/terraform.yml` |
 | `fmt` + `validate` automatiques | ✅ | jobs `fmt`, `validate` |
 | `plan` sur Pull Request | ✅ | job `plan` |
-| `apply` sur `main` | ✅ | job `apply` |
+| `apply` sur `main` | ✅ | jobs `apply-dev` / `apply-test` / `apply-prod` (environment + concurrence) |
 | Tests automatisés | ✅ | job `test` → `tests/run-tests.ps1` |
 | Secrets gérés hors du code | ✅ | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `DB_PASSWORD` |
 | Pas de création IAM par le pipeline | ✅ | *data sources* `LabRole`/`LabInstanceProfile` |

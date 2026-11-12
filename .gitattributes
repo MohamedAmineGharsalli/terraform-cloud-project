@@ -1,3 +1,13 @@
-# Shell scripts must keep LF line endings even on Windows, otherwise the
+# Normalize line endings so the repo behaves identically on Windows and on
+# ubuntu-latest (CI). These files must ALWAYS be checked out with LF:
+#   - *.sh  : shell scripts run on Linux (a CR would break `#!/bin/bash`)
+#   - *.tf  : Terraform code (keeps `terraform fmt -check` stable in CI)
+#   - *.yml / *.yaml : GitHub Actions workflows
+#   - *.hcl : Terraform lock files / config
+# The shell scripts especially must keep LF even on Windows, otherwise the
 # user_data script sent to the Linux instances would fail with "^M" errors.
-*.sh text eol=lf
+*.sh   text eol=lf
+*.tf   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.hcl  text eol=lf

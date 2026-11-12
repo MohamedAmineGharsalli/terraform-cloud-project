@@ -200,24 +200,36 @@ aucune ressource IAM** : il utilise le rôle pré-existant `LabRole` /
 
 | Événement | Environnements | Actions exécutées |
 |-----------|----------------|-------------------|
-| `pull_request` | `dev`, `test`, `prod` | `fmt` → `validate` → `test` → `plan` |
-| `push` sur `main` | `dev` | `fmt` → `validate` → `test` → `apply` |
-| `workflow_dispatch` | au choix (`dev`, `test`, `prod` ou `all`) | `fmt` → `validate` → `test` → `plan` → `apply` |
+| `pull_request` | `dev`, `test`, `prod` | `fmt` → `validate` → `test` → `plan` (publié en commentaire de PR) |
+| `push` sur `main` | `dev` | `fmt` → `validate` → `test` → `plan` + `apply` |
+| `workflow_dispatch` | au choix (`dev`, `test`, `prod` ou `all`) | `fmt` → `validate` → `test` → `plan` + `apply` |
 
 > Par défaut, un `push` sur `main` ne déploie que **`dev`** (limite de budget).
 > Pour déployer `test` ou `prod`, lance le workflow manuellement
 > (*Actions → terraform → Run workflow*) et choisis l'environnement.
 
+> Les jobs d'`apply` s'exécutent **uniquement sur `main`**
+> (`if: github.ref == 'refs/heads/main'`) et déclarent un **environment GitHub**
+> (`dev` / `test` / `prod`). Chaque environnement possède sa propre **groupe de
+> concurrence** (`cancel-in-progress: false`) : deux déploiements du même
+> environnement ne se chevauchent jamais, et un déploiement en cours n'est pas
+> annulé par un nouveau.
+
 ### 8.2 Jobs
 
 | Job | Rôle |
 |-----|------|
-| `prepare` | Calcule la liste des environnements à traiter selon l'événement |
+| `prepare` | Calcule les environnements à traiter et les indicateurs `run_dev` / `run_test` / `run_prod` |
 | `fmt` | `terraform fmt -check -recursive` |
 | `validate` | `terraform init -backend=false` + `terraform validate` pour les 6 modules et les 3 environnements (matrice) |
 | `test` | `tests/run-tests.ps1 -Suite scripts` (tests des scripts, via `pwsh`) |
-| `plan` | `terraform init` (backend S3) + `terraform plan` ; le plan est publié dans le résumé du job et en artefact |
-| `apply` | `terraform init` + `terraform apply -auto-approve` puis `terraform output` |
+| `plan` | `terraform init` (backend S3) + `terraform plan -out=tfplan` ; `plan.txt` (sans couleurs) est publié dans le résumé du job **et en commentaire de PR** (tronqué, un marqueur par environnement met à jour le commentaire existant) |
+| `apply-dev` / `apply-test` / `apply-prod` | `terraform init` + `terraform plan -out=tfplan` **puis** `terraform apply tfplan` dans le **même job** (l'apply consomme exactement le plan produit), suivi de `terraform output` |
+
+> Le **plan binaire** (`tfplan`) n'est **jamais** publié comme artefact : seul le
+> rendu lisible `plan.txt` est partagé. Le workflow utilise des **permissions
+> minimales** (`contents: read`, plus `pull-requests: write` uniquement pour le
+> job `plan`).
 
 ### 8.3 Secrets GitHub requis
 
