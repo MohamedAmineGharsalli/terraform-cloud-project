@@ -1,10 +1,17 @@
 # Note de conception — module `storage` (phase 4)
 
-> **Statut : conception validée, aucun code écrit.** Ce document fige les décisions
-> avant l'implémentation du module `modules/storage`.
+> **Statut : implémenté.** Les décisions ci-dessous sont figées et le module
+> `modules/storage` a été écrit (plus les scripts `scripts/s3_bucket_admin.ps1`
+> et `scripts/s3_bucket_admin.sh`).
 >
-> 🔴 **Décision en attente de ta validation** : l'approche cross-platform (§4) doit
-> être confirmée avant que j'écrive le module.
+> ✅ **Décision validée par l'utilisateur** : approche cross-platform **Option A**
+> (deux scripts + détection d'OS) pour le module `storage`.
+>
+> ✅ **Vérifié par test** (`terraform_data`, hors AWS) : un provisioner de
+> **destruction** ne peut référencer que `self`, `count.index` et `each.key`
+> (une référence à `local.*` produit l'erreur *« Invalid reference from destroy
+> provisioner »*). En revanche `self.input.*` **et** `path.module` sont autorisés.
+> Le module stocke donc `is_windows` dans `input`.
 
 ## 1. Contrainte
 
@@ -154,9 +161,9 @@ bucket). La logique métier est ainsi **hors de Terraform**, testable seule.
 **Option A.** Elle ne dépend que d'outils présents par défaut sur les deux
 plateformes et garde la logique testable.
 
-## 5. Décisions à confirmer
+## 5. Décisions (validées)
 
-- [ ] Option A (deux scripts + détection OS) pour le cross-platform.
-- [ ] `input` de `terraform_data` = objet `{ bucket, region }`.
+- [x] Option A (deux scripts + détection OS) pour le cross-platform.
+- [x] `input` de `terraform_data` = objet `{ bucket, region, is_windows }`.
 - [ ] Repli automatique vers `local-exec` pour les sous-ressources **si** le SCP
-      les bloque (je te préviendrai au `apply` de phase 4).
+      les bloque (à confirmer au `apply` de phase 4, non exécuté).
