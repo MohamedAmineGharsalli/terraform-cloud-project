@@ -1,0 +1,107 @@
+﻿**********************
+Début de la transcription Windows PowerShell
+Heure de début : 20261112125737
+Nom d'utilisateur : AMIN\Media
+Utilisateur runAs :  AMIN\Media
+Nom de la configuration : 
+Ordinateur : AMIN (Microsoft Windows NT 10.0.26200.0)
+Application hôte : C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/run-tests.ps1 -Suite all -IncludeAws
+ID de processus : 25688
+PSVersion: 5.1.26100.9818
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9818
+BuildVersion: 10.0.26100.9818
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+
+=== terraform ===
+  - fmt -check -recursive ...
+OK
+  - validate modules/compute ...
+OK
+  - validate modules/database ...
+OK
+  - validate modules/load-balancer ...
+OK
+  - validate modules/network ...
+OK
+  - validate modules/security ...
+OK
+  - validate modules/storage ...
+OK
+  - validate environments/dev ...
+OK
+  - validate environments/prod ...
+OK
+  - validate environments/test ...
+OK
+  - rendu du template user_data.sh ...
+OK
+
+=== scripts ===
+  - fin de ligne LF : scripts/s3_bucket_admin.sh ...
+OK
+  - fin de ligne LF : scripts/user_data.sh ...
+OK
+  - bash -n scripts/s3_bucket_admin.sh ...
+OK
+  - bash -n scripts/user_data.sh ...
+OK
+  - user_data.sh : jeton IMDSv2 (metadata) ...
+OK
+  - user_data.sh : placeholder Terraform ${project_name} ...
+OK
+  - s3_bucket_admin.ps1 : action invalide rejetee ...
+OK
+  - s3_bucket_admin.ps1 : arguments obligatoires ...
+OK
+  - s3_bucket_admin.sh : usage si arguments manquants ...
+OK
+  - s3_bucket_admin.sh : action inconnue rejetee ...
+OK
+
+=== aws ===
+  - aws sts get-caller-identity ...
+OK
+  - bucket d'etat present : cloud5-tfstate-766760778474 ...
+OK
+  - cycle de vie d'un bucket versionne temporaire ...
+OK
+
+----------------------------------------------------------
+ RESULTAT : 24 reussi(s), 0 echoue(s)
+----------------------------------------------------------
+
+Suite     Name                                                 Status Detail
+-----     ----                                                 ------ ------
+terraform fmt -check -recursive                                PASS         
+terraform validate modules/compute                             PASS         
+terraform validate modules/database                            PASS         
+terraform validate modules/load-balancer                       PASS         
+terraform validate modules/network                             PASS         
+terraform validate modules/security                            PASS         
+terraform validate modules/storage                             PASS         
+terraform validate environments/dev                            PASS         
+terraform validate environments/prod                           PASS         
+terraform validate environments/test                           PASS         
+terraform rendu du template user_data.sh                       PASS         
+scripts   fin de ligne LF : scripts/s3_bucket_admin.sh         PASS         
+scripts   fin de ligne LF : scripts/user_data.sh               PASS         
+scripts   bash -n scripts/s3_bucket_admin.sh                   PASS         
+scripts   bash -n scripts/user_data.sh                         PASS         
+scripts   user_data.sh : jeton IMDSv2 (metadata)               PASS         
+scripts   user_data.sh : placeholder Terraform ${project_name} PASS         
+scripts   s3_bucket_admin.ps1 : action invalide rejetee        PASS         
+scripts   s3_bucket_admin.ps1 : arguments obligatoires         PASS         
+scripts   s3_bucket_admin.sh : usage si arguments manquants    PASS         
+scripts   s3_bucket_admin.sh : action inconnue rejetee         PASS         
+aws       aws sts get-caller-identity                          PASS         
+aws       bucket d'etat present : cloud5-tfstate-766760778474  PASS         
+aws       cycle de vie d'un bucket versionne temporaire        PASS
+**********************
+Fin de la transcription Windows PowerShell
+Heure de fin : 20261112125946
+**********************

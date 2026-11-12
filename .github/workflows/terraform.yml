@@ -87,9 +87,6 @@ jobs:
       - name: terraform fmt -check
         run: terraform fmt -check -recursive
 
-      - name: Bash syntax check
-        run: bash -n scripts/s3_bucket_admin.sh scripts/user_data.sh
-
   # -------------------------------------------------------------------------
   # 2. Validation statique de chaque module et de chaque environnement
   #    (sans backend ni identifiants AWS).
@@ -129,7 +126,23 @@ jobs:
         working-directory: ${{ matrix.dir }}
 
   # -------------------------------------------------------------------------
-  # 3. Plan : sur pull_request et workflow_dispatch.
+  # 3. Tests des scripts : fins de ligne LF, syntaxe bash, arguments des
+  #    scripts s3_bucket_admin.{ps1,sh} (aucun identifiant AWS requis).
+  # -------------------------------------------------------------------------
+  test:
+    name: tests (scripts)
+    runs-on: ubuntu-latest
+    needs: [fmt]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run script tests
+        shell: pwsh
+        run: ./tests/run-tests.ps1 -Suite scripts -NoLog
+
+  # -------------------------------------------------------------------------
+  # 4. Plan : sur pull_request et workflow_dispatch.
   # -------------------------------------------------------------------------
   plan:
     name: plan (${{ matrix.environment }})
@@ -180,7 +193,7 @@ jobs:
           retention-days: 7
 
   # -------------------------------------------------------------------------
-  # 4. Apply : sur push vers main et workflow_dispatch.
+  # 5. Apply : sur push vers main et workflow_dispatch.
   # -------------------------------------------------------------------------
   apply:
     name: apply (${{ matrix.environment }})
