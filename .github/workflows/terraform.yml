@@ -251,7 +251,7 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - name: terraform init
-        run: terraform init -input=false -no-color
+        run: terraform init -input=false -no-color -backend-config="bucket=cloud5-tfstate-$(aws sts get-caller-identity --query Account --output text)"
 
       - name: terraform plan
         run: terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan
@@ -385,7 +385,7 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - name: terraform init
-        run: terraform init -input=false -no-color
+        run: terraform init -input=false -no-color -backend-config="bucket=cloud5-tfstate-$(aws sts get-caller-identity --query Account --output text)"
 
       - name: terraform plan
         run: terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan
@@ -453,7 +453,7 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - name: terraform init
-        run: terraform init -input=false -no-color
+        run: terraform init -input=false -no-color -backend-config="bucket=cloud5-tfstate-$(aws sts get-caller-identity --query Account --output text)"
 
       - name: terraform plan
         run: terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan
@@ -521,7 +521,7 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - name: terraform init
-        run: terraform init -input=false -no-color
+        run: terraform init -input=false -no-color -backend-config="bucket=cloud5-tfstate-$(aws sts get-caller-identity --query Account --output text)"
 
       - name: terraform plan
         run: terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan
